@@ -1,0 +1,108 @@
+name: Build XNU for Xiaomi Mi 6
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-xnu:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+
+    steps:
+      - name: Free runner disk
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+          df -h /
+
+      - name: Checkout sagit
+        uses: actions/checkout@v4
+        with:
+          path: device
+
+      - name: Checkout UniXNU
+        uses: actions/checkout@v4
+        with:
+          repository: UniXNU/UniXNU
+          ref: main
+          path: unixnu-src
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Cache toolchain
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/unixnu-toolchain
+          key: unixnu-toolchain-ubuntu24-v1
+
+      - name: Build Linux toolchain
+        run: |
+          mkdir -p "$RUNNER_TEMP/unixnu-tmp"
+          sudo env TMPDIR="$RUNNER_TEMP/unixnu-tmp" \
+            python3 "$GITHUB_WORKSPACE/unixnu-src/scripts/linux/setup-toolchain.py" \
+            "$HOME/.cache/unixnu-toolchain" --jobs 4
+          sudo chown -R "$USER:$USER" "$HOME/.cache/unixnu-toolchain"
+
+      - name: Build XNU 8796 for sagit
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          IPSW_URL="$(python3 - <<'PY'
+          import json
+          import urllib.request
+
+          url = "https://api.ipsw.me/v4/device/iPhone10,1?type=ipsw"
+          with urllib.request.urlopen(url, timeout=60) as response:
+              data = json.load(response)
+
+          matches = [
+              item for item in data["firmwares"]
+              if item.get("version") == "16.7.16"
+              and item.get("buildid") == "20H392"
+          ]
+
+          if not matches:
+              raise SystemExit("iOS 16.7.16 (20H392) IPSW not found")
+
+          print(matches[0]["url"])
+          PY
+          )"
+
+          cd "$GITHUB_WORKSPACE/unixnu-src"
+
+          ./unixnu ipsw fetch KernelCache \
+            --ipsw "$IPSW_URL" \
+            -D "$GITHUB_WORKSPACE/device" \
+            2>&1 | tee "$RUNNER_TEMP/ipsw.log"
+
+          KERNELCACHE="$GITHUB_WORKSPACE/unixnu-src/out/ipsw/20H392/kernelcache.decompressed"
+          test -s "$KERNELCACHE"
+
+          cd "$GITHUB_WORKSPACE/device"
+          mkdir -p "$RUNNER_TEMP/unixnu-tmp"
+
+          SRC="$GITHUB_WORKSPACE/unixnu-src" \
+          TOOLCHAIN="$HOME/.cache/unixnu-toolchain" \
+          UNIXNU_KERNELCACHE="$KERNELCACHE" \
+          TMPDIR="$RUNNER_TEMP/unixnu-tmp" \
+          bash tools/build-xnu-sagit.sh \
+            2>&1 | tee "$RUNNER_TEMP/xnu-build.log"
+
+      - name: Upload XNU and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xnu-sagit-${{ github.run_number }}
+          path: |
+            unixnu-src/out/sagit/ios-16.7.16-20H392/sagit/tree/build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837.unstripped.noctf
+            unixnu-src/out/ipsw/20H392/kernelcache.decompressed
+            ${{ runner.temp }}/ipsw.log
+            ${{ runner.temp }}/xnu-build.log
+          if-no-files-found: warn
+          retention-days: 14
