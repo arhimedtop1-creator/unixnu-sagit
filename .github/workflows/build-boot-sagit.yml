@@ -26,29 +26,31 @@ concurrency:
 jobs:
   build:
     name: XNU + ADT + EDK2 + Android boot image
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux, x64, sagit]
     timeout-minutes: 360
 
     steps:
-      - name: Free runner disk
+      - name: Check persistent Fedora build environment
+        shell: bash
         run: |
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
-          df -h /
-
-      - name: Install build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential uuid-dev iasl nasm gettext \
-            python3-pil python3-git python3-setuptools \
-            dosfstools mtools device-tree-compiler \
-            curl git patch xz-utils
+          set -euo pipefail
+          missing=()
+          for tool in git curl patch xz make gcc g++ nasm iasl flex bison cmake ninja llvm-config tcsh unifdef mformat mcopy dtc fdtget fdtput; do
+            command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
+          done
+          if (("${#missing[@]}")); then
+            printf 'Missing host tools: %s\\n' "${missing[*]}"
+            echo 'Install the Fedora build dependencies once on this computer; do not install them in every workflow run.'
+            exit 1
+          fi
+          df -h "$HOME"
 
       - name: Checkout sagit device port
         uses: actions/checkout@v4
         with:
           path: device
           fetch-depth: 0
+          clean: false
 
       - name: Checkout UniXNU sources and submodules
         uses: actions/checkout@v4
@@ -58,6 +60,7 @@ jobs:
           path: unixnu-src
           submodules: recursive
           fetch-depth: 1
+          clean: false
 
       - name: Checkout MSM8998 EDK2 port and submodules
         uses: actions/checkout@v4
@@ -67,28 +70,24 @@ jobs:
           path: edk2-msm8998
           submodules: recursive
           fetch-depth: 1
+          clean: false
 
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
-      - name: Cache UniXNU Linux toolchain
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/unixnu-toolchain
-          key: unixnu-toolchain-ubuntu24-v2
-          save-always: true
-
-      - name: Build UniXNU Linux toolchain
+      - name: Reuse the persistent UniXNU Linux toolchain
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/unixnu-tmp"
-          sudo env TMPDIR="$RUNNER_TEMP/unixnu-tmp" \
-            python3 "$GITHUB_WORKSPACE/unixnu-src/scripts/linux/setup-toolchain.py" \
-            "$HOME/.cache/unixnu-toolchain" --jobs 4
-          sudo chown -R "$USER:$USER" "$HOME/.cache/unixnu-toolchain"
+          TOOLCHAIN="$HOME/.cache/unixnu-toolchain"
+          if [[ ! -x "$TOOLCHAIN/llvm/bin/clang" ]]; then
+            echo "Persistent UniXNU toolchain is missing at $TOOLCHAIN."
+            echo "Install it once on the Fedora host using scripts/linux/setup-toolchain.py, then rerun this workflow."
+            exit 1
+          fi
+          "$TOOLCHAIN/llvm/bin/clang" --version
 
       - name: Install the sagit iOS 16.7.16 profile before IPSW operations
         run: |
@@ -171,17 +170,21 @@ jobs:
               --args="-v -enable_kprintf_spam debug=0x14e"
           test -s device/out/sagit-payload-volume.img
 
-      - name: Download ARM GNU Toolchain 13.2.Rel1
+      - name: Reuse or install persistent ARM GNU Toolchain 13.2.Rel1
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/arm-toolchain"
-          ARCHIVE="$RUNNER_TEMP/arm-gnu-toolchain-13.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz"
-          curl -fL --retry 5 --retry-delay 3 \
-            "https://developer.arm.com/-/media/Files/downloads/gnu/13.2.rel1/binrel/arm-gnu-toolchain-13.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz" \
-            -o "$ARCHIVE"
-          tar -xJf "$ARCHIVE" -C "$RUNNER_TEMP/arm-toolchain"
-          TOOLCHAIN="$(find "$RUNNER_TEMP/arm-toolchain" -mindepth 1 -maxdepth 1 -type d -name 'arm-gnu-toolchain-*' -print -quit)"
+          TOOLCHAIN="$HOME/.cache/arm-gnu-toolchain-13.2.rel1"
+          if [[ ! -x "$TOOLCHAIN/bin/aarch64-none-linux-gnu-gcc" ]]; then
+            mkdir -p "$HOME/.cache"
+            ARCHIVE="$RUNNER_TEMP/arm-gnu-toolchain-13.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz"
+            curl -fL --retry 5 --retry-delay 3 \
+              "https://developer.arm.com/-/media/Files/downloads/gnu/13.2.rel1/binrel/arm-gnu-toolchain-13.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz" \
+              -o "$ARCHIVE"
+            mkdir -p "$TOOLCHAIN"
+            tar -xJf "$ARCHIVE" --strip-components=1 -C "$TOOLCHAIN"
+            rm -f "$ARCHIVE"
+          fi
           test -x "$TOOLCHAIN/bin/aarch64-none-linux-gnu-gcc"
           echo "ARM_TOOLCHAIN=$TOOLCHAIN" >> "$GITHUB_ENV"
 
