@@ -1,0 +1,254 @@
+name: Build UniXNU boot.img for Xiaomi Mi 6 (sagit)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/build-boot-sagit.yml'
+      - 'board.toml'
+      - 'feeds.toml'
+      - 'profiles/**'
+      - 'configs/**'
+      - 'dts/**'
+      - 'soc/**'
+      - 'patches/**'
+      - 'firmware/**'
+      - 'tools/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: boot-sagit-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: XNU + ADT + EDK2 + Android boot image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+
+    steps:
+      - name: Free runner disk
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+          df -h /
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential uuid-dev iasl nasm gettext \
+            python3-pil python3-git python3-setuptools \
+            dosfstools mtools device-tree-compiler \
+            curl git patch xz-utils
+
+      - name: Checkout sagit device port
+        uses: actions/checkout@v4
+        with:
+          path: device
+          fetch-depth: 0
+
+      - name: Checkout UniXNU sources and submodules
+        uses: actions/checkout@v4
+        with:
+          repository: UniXNU/UniXNU
+          ref: main
+          path: unixnu-src
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Checkout MSM8998 EDK2 port and submodules
+        uses: actions/checkout@v4
+        with:
+          repository: edk2-porting/edk2-msm8998
+          ref: new
+          path: edk2-msm8998
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Cache UniXNU Linux toolchain
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/unixnu-toolchain
+          key: unixnu-toolchain-ubuntu24-v2
+          save-always: true
+
+      - name: Build UniXNU Linux toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/unixnu-tmp"
+          sudo env TMPDIR="$RUNNER_TEMP/unixnu-tmp" \
+            python3 "$GITHUB_WORKSPACE/unixnu-src/scripts/linux/setup-toolchain.py" \
+            "$HOME/.cache/unixnu-toolchain" --jobs 4
+          sudo chown -R "$USER:$USER" "$HOME/.cache/unixnu-toolchain"
+
+      - name: Install the sagit iOS 16.7.16 profile before IPSW operations
+        run: |
+          mkdir -p unixnu-src/profiles/os
+          rm -rf unixnu-src/profiles/os/ios-16.7.16-20H392
+          cp -a device/profiles/os/ios-16.7.16-20H392 unixnu-src/profiles/os/
+          test -s unixnu-src/profiles/os/ios-16.7.16-20H392/profile.toml
+
+      - name: Fetch matching iOS 16.7.16 kernelcache
+        shell: bash
+        run: |
+          set -euo pipefail
+          IPSW_URL="$(python3 - <<'PY'
+          import json
+          import urllib.request
+
+          url = "https://api.ipsw.me/v4/device/iPhone10,1?type=ipsw"
+          request = urllib.request.Request(url, headers={"User-Agent": "unixnu-sagit-ci"})
+          with urllib.request.urlopen(request, timeout=60) as response:
+              data = json.load(response)
+
+          matches = [
+              item for item in data["firmwares"]
+              if item.get("version") == "16.7.16"
+              and item.get("buildid") == "20H392"
+          ]
+          if not matches:
+              raise SystemExit("iOS 16.7.16 (20H392) IPSW not found for iPhone10,1")
+          print(matches[0]["url"])
+          PY
+          )"
+
+          cd unixnu-src
+          ./unixnu ipsw fetch KernelCache \
+            --ipsw "$IPSW_URL" \
+            -D "$GITHUB_WORKSPACE/device" \
+            2>&1 | tee "$RUNNER_TEMP/ipsw.log"
+
+          test -s out/ipsw/20H392/kernelcache.decompressed
+
+      - name: Build XNU for sagit
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/unixnu-tmp"
+          cd device
+          SRC="$GITHUB_WORKSPACE/unixnu-src" \
+          TOOLCHAIN="$HOME/.cache/unixnu-toolchain" \
+          UNIXNU_KERNELCACHE="$GITHUB_WORKSPACE/unixnu-src/out/ipsw/20H392/kernelcache.decompressed" \
+          TMPDIR="$RUNNER_TEMP/unixnu-tmp" \
+          bash tools/build-xnu-sagit.sh \
+            2>&1 | tee "$RUNNER_TEMP/xnu-build.log"
+
+      - name: Generate sagit Apple Device Tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p device/out/adt
+          UNIQUE_CHIP_ID="0x$(openssl rand -hex 8)"
+          UNIXNU_SRC="$GITHUB_WORKSPACE/unixnu-src" \
+            python3 device/tools/make-sagit-adt.py \
+              --output device/out/adt/kernel.macho.adt \
+              --unique-chip-id "$UNIQUE_CHIP_ID" \
+              --kernel-args="-v -enable_kprintf_spam debug=0x14e"
+          test -s device/out/adt/kernel.macho.adt
+
+      - name: Build FAT payload volume
+        shell: bash
+        run: |
+          set -euo pipefail
+          KERNEL="$GITHUB_WORKSPACE/unixnu-src/out/sagit/ios-16.7.16-20H392/sagit/tree/build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837.unstripped.noctf"
+          test -s "$KERNEL"
+          mkdir -p device/out "$RUNNER_TEMP/payload-tmp"
+          TMPDIR="$RUNNER_TEMP/payload-tmp" \
+            python3 device/tools/mksagit-payload.py \
+              --kernel "$KERNEL" \
+              --adt "$GITHUB_WORKSPACE/device/out/adt/kernel.macho.adt" \
+              --output "$GITHUB_WORKSPACE/device/out/sagit-payload-volume.img" \
+              --size-mib 32 \
+              --args="-v -enable_kprintf_spam debug=0x14e"
+          test -s device/out/sagit-payload-volume.img
+
+      - name: Download ARM GNU Toolchain 13.2.Rel1
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/arm-toolchain"
+          ARCHIVE="$RUNNER_TEMP/arm-gnu-toolchain-13.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz"
+          curl -fL --retry 5 --retry-delay 3 \
+            "https://developer.arm.com/-/media/Files/downloads/gnu/13.2.rel1/binrel/arm-gnu-toolchain-13.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz" \
+            -o "$ARCHIVE"
+          tar -xJf "$ARCHIVE" -C "$RUNNER_TEMP/arm-toolchain"
+          TOOLCHAIN="$(find "$RUNNER_TEMP/arm-toolchain" -mindepth 1 -maxdepth 1 -type d -name 'arm-gnu-toolchain-*' -print -quit)"
+          test -x "$TOOLCHAIN/bin/aarch64-none-linux-gnu-gcc"
+          echo "ARM_TOOLCHAIN=$TOOLCHAIN" >> "$GITHUB_ENV"
+
+      - name: Fetch pinned Mu BaseCore and UniXNU submodules
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd unixnu-src
+          ./unixnu fetch -D "$GITHUB_WORKSPACE/device" edk2 \
+            2>&1 | tee "$RUNNER_TEMP/unixnu-fetch.log"
+          MU_BASECORE="$(find out/feeds -mindepth 1 -maxdepth 1 -type d -name 'mu_basecore-*' -print -quit)"
+          test -n "$MU_BASECORE"
+          test -s "$MU_BASECORE/MdePkg/Include/Guid/Fdt.h"
+          test -s "$MU_BASECORE/MdePkg/Library/BaseFdtLib/BaseFdtLib.inf"
+          test -s "$MU_BASECORE/MdePkg/Include/AArch64/AsmMacroLib.h"
+          test -s drivers/DarwinBoot/DarwinBootPkg/Driver/BootVideo.h
+          echo "MU_BASECORE=$GITHUB_WORKSPACE/unixnu-src/$MU_BASECORE" >> "$GITHUB_ENV"
+
+      - name: Build EDK2 firmware and package boot-sagit.img
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/edk2-tmp"
+          cd device
+          ROOT="$GITHUB_WORKSPACE/edk2-msm8998" \
+          TOOLCHAIN="$ARM_TOOLCHAIN" \
+          UNIXNU_SRC="$GITHUB_WORKSPACE/unixnu-src" \
+          MU_BASECORE="$MU_BASECORE" \
+          TMPDIR="$RUNNER_TEMP/edk2-tmp" \
+          PAYLOAD="$GITHUB_WORKSPACE/device/out/sagit-payload-volume.img" \
+            bash tools/build-sagit-edk2.sh \
+              2>&1 | tee "$RUNNER_TEMP/edk2-build.log"
+
+      - name: Verify Android boot image
+        shell: bash
+        run: |
+          set -euo pipefail
+          IMAGE="edk2-msm8998/workspace/out/boot-sagit.img"
+          test -s "$IMAGE"
+          python3 - "$IMAGE" <<'PY'
+          from pathlib import Path
+          import sys
+
+          image = Path(sys.argv[1])
+          data = image.read_bytes()
+          if data[:8] != b"ANDROID!":
+              raise SystemExit("invalid Android boot image magic")
+          if len(data) > 64 * 1024 * 1024:
+              raise SystemExit(f"boot image exceeds sagit 64 MiB boot partition: {len(data)} bytes")
+          print(f"boot-sagit.img: {len(data)} bytes")
+          PY
+          sha256sum "$IMAGE"
+
+      - name: Upload boot image, kernel, payload and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: boot-sagit-${{ github.run_number }}
+          path: |
+            edk2-msm8998/workspace/out/boot-sagit.img
+            unixnu-src/out/sagit/ios-16.7.16-20H392/sagit/tree/build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837.unstripped.noctf
+            unixnu-src/out/ipsw/20H392/kernelcache.decompressed
+            device/out/adt/kernel.macho.adt
+            device/out/sagit-payload-volume.img
+            ${{ runner.temp }}/ipsw.log
+            ${{ runner.temp }}/xnu-build.log
+            ${{ runner.temp }}/unixnu-fetch.log
+            ${{ runner.temp }}/edk2-build.log
+          if-no-files-found: warn
+          retention-days: 30
