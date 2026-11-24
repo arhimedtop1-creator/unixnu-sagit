@@ -76,8 +76,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          /usr/bin/python3.12 --version
-          echo "PYTHON=/usr/bin/python3.12" >> "$GITHUB_ENV"
+          PYTHON_BIN="/usr/bin/python3.12"
+          "$PYTHON_BIN" --version
+          mkdir -p "$RUNNER_TEMP/python312-bin"
+          ln -sf "$PYTHON_BIN" "$RUNNER_TEMP/python312-bin/python"
+          ln -sf "$PYTHON_BIN" "$RUNNER_TEMP/python312-bin/python3"
+          echo "$RUNNER_TEMP/python312-bin" >> "$GITHUB_PATH"
+          export PATH="$RUNNER_TEMP/python312-bin:$PATH"
+          echo "PYTHON=$PYTHON_BIN" >> "$GITHUB_ENV"
+          python --version
+          python3 --version
 
       - name: Reuse the persistent UniXNU Linux toolchain
         shell: bash
