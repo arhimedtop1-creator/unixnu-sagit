@@ -72,10 +72,12 @@ jobs:
           fetch-depth: 1
           clean: false
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
+      - name: Use system Python 3.12
+        shell: bash
+        run: |
+          set -euo pipefail
+          /usr/bin/python3.12 --version
+          echo "PYTHON=/usr/bin/python3.12" >> "$GITHUB_ENV"
 
       - name: Reuse the persistent UniXNU Linux toolchain
         shell: bash
