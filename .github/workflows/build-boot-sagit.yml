@@ -121,10 +121,15 @@ jobs:
           )"
 
           cd unixnu-src
-          ./unixnu ipsw fetch KernelCache \
-            --ipsw "$IPSW_URL" \
-            -D "$GITHUB_WORKSPACE/device" \
-            2>&1 | tee "$RUNNER_TEMP/ipsw.log"
+          mkdir -p out/ipsw/20H392
+          if [[ -s out/ipsw/20H392/kernelcache.decompressed ]]; then
+            echo "Reusing the existing 20H392 kernelcache from the persistent workspace."
+          else
+            ./unixnu ipsw fetch KernelCache \
+              --ipsw "$IPSW_URL" \
+              -D "$GITHUB_WORKSPACE/device" \
+              2>&1 | tee "$RUNNER_TEMP/ipsw.log"
+          fi
 
           test -s out/ipsw/20H392/kernelcache.decompressed
 
