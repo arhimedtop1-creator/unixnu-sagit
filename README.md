@@ -75,6 +75,39 @@ Everything is expected next to this checkout in the work directory:
   tmp/               TMPDIR for the payload builder
 ```
 
+
+## Local Fedora build runner (one-time setup)
+
+The GitHub Actions workflow is configured for a **self-hosted runner** labelled
+`sagit`. Jobs run on the Fedora computer where that runner is installed;
+GitHub-hosted Ubuntu machines are not used. The workspace, UniXNU build tree,
+EDK2 checkout, downloaded kernelcache, and toolchains remain on that computer
+between jobs. The workflow deliberately does not wipe the runner disk.
+
+1. In this repository open **Settings → Actions → Runners → New self-hosted runner**.
+   Select **Linux / x64** and follow GitHub's current download and registration
+   commands. During configuration, add the extra runner label `sagit`.
+   The registration token is short-lived; generate it immediately before setup
+   and do not paste it into chat, a commit, or a script.
+2. From this repository checkout on Fedora, run the one-time dependency and
+   toolchain setup:
+
+   ```sh
+   bash tools/setup-fedora-runner.sh
+   ```
+
+   This installs Fedora build dependencies and builds the UniXNU Linux
+   toolchain once under `~/.cache/unixnu-toolchain`. It requires sudo for
+   package installation and toolchain shims.
+3. Install/start the runner as a service using the `svc.sh` commands printed
+   by GitHub's runner setup instructions. Keep the computer powered on and
+   connected to the network for remote workflow jobs.
+
+The workflow reuses the runner's persistent checkout and skips IPSW kernelcache
+download when the verified 20H392 cache file already exists. XNU build outputs
+stay in the persistent UniXNU `out/` tree, so incremental builds can reuse
+them. Do not run multiple builds concurrently in the same workspace.
+
 ## Build
 
 ```sh
