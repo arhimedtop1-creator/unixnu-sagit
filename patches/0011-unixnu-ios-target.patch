@@ -1,18 +1,3 @@
-diff --git a/scripts/build-xnu-4k-baseline.sh b/scripts/build-xnu-4k-baseline.sh
-index a036489..532bc94 100755
---- a/scripts/build-xnu-4k-baseline.sh
-+++ b/scripts/build-xnu-4k-baseline.sh
-@@ -798,8 +798,8 @@ make -C .cache/xnu-work "${XNU_BUILD_TARGET:-build}" SDKROOT="${XNU_SDKROOT:-iph
-   MACHINE_CONFIGS=BCM2837 KERNEL_CONFIGS=DEVELOPMENT \
-   ARCH_STRING_FOR_CURRENT_MACHINE_CONFIG=arm64 LARGE_MEMORY_DEFINE=-UARM_LARGE_MEMORY \
-   ARM64_LINK_ADDR=0xfffffff007004000 ARM64_PLKSEG_ADDR=0xfffffff004004000 \
--  DEPLOYMENT_TARGET_FLAGS="-miphoneos-version-min=17.0 -DXNU_TARGET_OS_IOS" \
--  DEPLOYMENT_LINKER_FLAGS="-Wl,-ios_version_min,17.0" \
-+  DEPLOYMENT_TARGET_FLAGS="-miphoneos-version-min=${UNIXNU_DEPLOYMENT_TARGET:-17.0} -DXNU_TARGET_OS_IOS" \
-+  DEPLOYMENT_LINKER_FLAGS="-Wl,-ios_version_min,${UNIXNU_DEPLOYMENT_TARGET:-17.0}" \
-   RC_DARWIN_KERNEL_VERSION="$XNU_DARWIN" RC_ProjectSourceVersion="$XNU_VERSION" \
-   BUILD_LTO=0 BOUND_CHECKS=0 BUILD_WERROR="${XNU_BUILD_WERROR:-0}" MAKEJOBS=-j"${JOBS:-4}" \
-   CFLAGS_EXTRA="$EXTRA_CFLAGS" "${EXTRA_MAKE_ARGS[@]}" ${XNU_HOST_MAKE_ARGS[@]+"${XNU_HOST_MAKE_ARGS[@]}"} \
 diff --git a/scripts/unixnu/kernel.py b/scripts/unixnu/kernel.py
 index 19558bd..bc34d05 100644
 --- a/scripts/unixnu/kernel.py
