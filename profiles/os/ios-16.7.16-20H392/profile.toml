@@ -18,7 +18,7 @@
 "version" = "16.7.16"
 "build" = "20H392"
 "device_class" = "d20ap"
-"chip_id" = 32785
+"chip_id" = 32789 # Apple T8015 (0x8015), iPhone10,1 / D20AP
 "board_id" = 2
 "fetch" = ["KernelCache", "DeviceTree", "StaticTrustCache", "Cryptex1,SystemTrustCache"]
 
