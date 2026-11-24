@@ -97,7 +97,14 @@ jobs:
             echo "Install it once on the Fedora host using scripts/linux/setup-toolchain.py, then rerun this workflow."
             exit 1
           fi
+          if [[ ! -x "$TOOLCHAIN/bin/lzfse" ]]; then
+            echo "Required lzfse executable is missing at $TOOLCHAIN/bin/lzfse."
+            exit 1
+          fi
+          echo "$TOOLCHAIN/bin" >> "$GITHUB_PATH"
+          export PATH="$TOOLCHAIN/bin:$PATH"
           "$TOOLCHAIN/llvm/bin/clang" --version
+          echo "lzfse: $(command -v lzfse)"
 
       - name: Install the sagit iOS 16.7.16 profile before IPSW operations
         run: |
